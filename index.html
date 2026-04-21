@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>やさしい給食タイムクロック</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="theme-default">
+    <main class="app">
+      <h1>やさしい給食タイムクロック</h1>
+      <p class="lead">時間に合わせて、子どもたちへ声かけを表示します</p>
+
+      <section class="clock-card" aria-live="polite">
+        <p id="current-time" class="time">--:--:--</p>
+        <p id="phase-label" class="phase">いまは通常モードです</p>
+        <p id="message" class="message">楽しく食べよう！</p>
+      </section>
+
+      <details class="schedule">
+        <summary>表示スケジュールを見る</summary>
+        <ul>
+          <li>12:25〜12:44: そろそろ いただきましたの時間だよ</li>
+          <li>12:45: あと5分です。食べ終わってない人は急ぎましょう</li>
+          <li>12:46: そろそろ食べ終わったかな？ラストスパート！</li>
+          <li>12:47以降: 【MMT】もぐもぐミッションタイム！みんなで達成しよう</li>
+        </ul>
+      </details>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
