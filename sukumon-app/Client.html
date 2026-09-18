@@ -1,0 +1,272 @@
+<script>
+(() => {
+  const state = { page: 'main', data: null, detail: null, result: null, pageIndex: 0,
+    difficulty: 1, imageCache: {}, busy: false, audio: null };
+  const root = document.getElementById('app');
+  const toastNode = document.getElementById('toast');
+  const labels = { new: '未挑戦', active: '挑戦中', defeated: '討伐済', retry: '再挑戦可能' };
+  const settingLabels = {
+    DRIVE_FOLDER_ID: 'Drive画像フォルダID', RESPONSE_SHEET_NAME: '回答シート名',
+    SCORE_COLUMN: '点数列（列記号または見出し）', TIMESTAMP_COLUMN: '回答日時列（列記号または見出し）',
+    HP_1: '★ 初期HP', HP_2: '★★ 初期HP', HP_3: '★★★ 初期HP',
+    DAMAGE_MULTIPLIER: 'ダメージ倍率', COMBO_RISE: 'コンボ上昇幅', COMBO_MINIMUM: 'コンボ最低平均',
+    BONUS_1: '1 COMBO ボーナス', BONUS_2: '2 COMBO ボーナス',
+    BONUS_3: '3 COMBO ボーナス', BONUS_4: '4 COMBO以上 ボーナス'
+  };
+
+  function safe(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, char =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+  }
+  function api(method, ...args) {
+    return new Promise((resolve, reject) => google.script.run
+      .withSuccessHandler(resolve).withFailureHandler(reject)[method](...args));
+  }
+  function toast(message) {
+    toastNode.textContent = message;
+    toastNode.classList.add('show');
+    clearTimeout(toastNode._timer);
+    toastNode._timer = setTimeout(() => toastNode.classList.remove('show'), 4500);
+  }
+  async function run(task) {
+    if (state.busy) return;
+    state.busy = true;
+    root.querySelectorAll('[data-mutate]').forEach(button => { button.disabled = true; });
+    try { await task(); }
+    catch (error) { toast(error && error.message ? error.message : '操作を完了できませんでした。'); }
+    finally { state.busy = false; root.querySelectorAll('[data-mutate]').forEach(button => { button.disabled = false; }); }
+  }
+  async function refresh() {
+    state.data = await api('dashboard');
+    render();
+  }
+  function shell(content) {
+    return `<div class="app-shell"><header class="topbar"><div class="brand">スク<span>モン</span>討伐</div>
+      <div class="top-actions"><button class="btn ghost" data-action="main">討伐画面</button>
+      <button class="btn ghost" data-action="encyclopedia">討伐図鑑</button>
+      <button class="icon-btn" data-action="settings" title="設定" aria-label="設定">⚙</button></div></header>${content}</div>`;
+  }
+  function image(id, className = '') {
+    return `<img class="${className}" data-image="${safe(id)}" alt="スクモンの画像" loading="lazy">`;
+  }
+  async function loadImages() {
+    const ids = [...new Set([...root.querySelectorAll('img[data-image]')].map(img => img.dataset.image))];
+    await Promise.all(ids.map(async id => {
+      if (!state.imageCache[id]) {
+        try { state.imageCache[id] = await api('monsterImage', id); }
+        catch (error) { state.imageCache[id] = ''; }
+      }
+      root.querySelectorAll('img[data-image]').forEach(img => {
+        if (img.dataset.image === id && state.imageCache[id]) img.src = state.imageCache[id];
+        if (img.dataset.image === id && !state.imageCache[id]) img.alt = '画像を読み込めませんでした';
+      });
+    }));
+  }
+  function mainView() {
+    const data = state.data;
+    if (!data.current) return shell(`<main class="empty-state"><div class="eyebrow">NEW CHALLENGE</div>
+      <h1>次のスクモンを選ぼう</h1><p>討伐図鑑から挑戦するモンスターを選べます。</p>
+      <button class="btn primary" data-action="encyclopedia">討伐図鑑をひらく</button></main>`);
+    const current = data.current;
+    const hpRate = current.currentHp / current.maxHp;
+    const sceneClass = hpRate <= .1 ? 'critical' : hpRate <= .5 ? 'hurt' : hpRate <= .75 ? 'tired' : '';
+    const average = data.preview.average;
+    const shownAverage = data.todayAttacked && data.week.some(point => point.date === data.day)
+      ? (data.week.find(point => point.date === data.day) || {}).average : average;
+    const estimated = average === null ? null : Math.round(average * Number(data.config.DAMAGE_MULTIPLIER));
+    return shell(`<main class="main-stage"><section class="monster-side"><div class="monster-head"><div>
+      <div class="eyebrow">CURRENT BATTLE · ${safe(current.startDate)}</div>
+      <h1 class="title">${safe(current.name)}</h1></div><div class="stars" aria-label="強さ${current.difficulty}">${'★'.repeat(current.difficulty)}</div></div>
+      <div class="monster-scene ${sceneClass}" id="monster-scene">${image(current.monsterId)}
+      ${hpRate > 0 && hpRate <= .1 ? '<div class="near">あと少し！</div>' : ''}</div></section>
+      <aside class="side-stats"><section class="stat-band"><div class="stat-label">今日のクラス平均</div>
+      <div class="avg-line"><div class="hero-number">${shownAverage === null || shownAverage === undefined ? '—' : safe(Number(shownAverage.toFixed(1)))}<small>点</small></div>
+      <div><div class="stat-label">${data.todayAttacked ? '今日のダメージ' : '基本ダメージ見込み'}</div>
+      <div class="damage">${data.todayAttacked ? safe(data.todayDamage) : estimated === null ? '—' : estimated}</div></div></div>
+      <div class="muted small">${data.preview.error ? safe(data.preview.error) : `${data.preview.responseCount}人が回答`}</div></section>
+      <section class="stat-band"><div class="stat-label">今週のクラス平均</div><div class="chart">${data.week.map(point =>
+        `<div class="bar-col ${point.date === data.day ? 'today' : ''}"><div class="bar-value">${point.average === null ? '—' : safe(Number(point.average.toFixed(1)))}</div>
+        <div class="bar-track"><div class="bar" style="height:${point.average === null ? 0 : point.average}%"></div></div><span>${point.label}</span></div>`).join('')}</div></section>
+      <section class="stat-band"><div class="stat-label">成長コンボ</div><div class="combo"><strong>${current.comboCount} COMBO</strong>
+      <span class="combo-bonus">+${Number(data.config['BONUS_' + Math.min(current.comboCount, 4)] || 0)}</span></div></section></aside></main>
+      <footer class="battle-footer"><div><div class="hp-row"><span>MONSTER HP</span><span><b>${current.currentHp.toLocaleString()}</b> / ${current.maxHp.toLocaleString()}</span></div>
+      <div class="hp-track" role="progressbar" aria-label="モンスターHP" aria-valuenow="${current.currentHp}" aria-valuemax="${current.maxHp}">
+      <div class="hp-fill ${hpRate <= .1 ? 'critical' : hpRate <= .25 ? 'low' : ''}" style="width:${Math.max(0, hpRate * 100)}%"></div></div></div>
+      <button class="btn primary attack" data-action="attack" data-mutate ${data.todayAttacked || average === null ? 'disabled' : ''}>
+      ${data.todayAttacked ? '今日の攻撃済み' : '攻撃する'}</button></footer>`);
+  }
+  function encyclopediaView() {
+    const monsters = state.data.monsters;
+    const defeatedCount = monsters.filter(item => item.defeatedCount > 0).length;
+    if (state.pageIndex < 0) return shell(`<main class="book-cover"><div class="eyebrow">MONSTER ENCYCLOPEDIA</div>
+      <h1>4年3組<br>スクモン討伐図鑑</h1><div class="count">討伐数 ${defeatedCount} / ${monsters.length}</div>
+      <button class="btn primary" data-action="book-open">ひらく</button></main>`);
+    const start = state.pageIndex * 6;
+    const cards = monsters.slice(start, start + 6);
+    const page = (items, title) => `<section class="book-page"><h2>${title}</h2><div class="card-grid">${items.map(monster =>
+      `<button class="monster-card" data-action="detail" data-id="${safe(monster.monsterId)}">${image(monster.monsterId)}
+      <strong>${safe(monster.name)}</strong><span class="badge ${safe(monster.status)}">${safe(labels[monster.status])}</span></button>`).join('')}</div></section>`;
+    return shell(`<main class="book">${page(cards.slice(0, 3), 'スクモン図鑑')}${page(cards.slice(3, 6), `${start + 1} - ${Math.min(start + 6, monsters.length)}`)}</main>
+      <nav class="book-nav"><button class="btn" data-action="book-prev" ${state.pageIndex === 0 ? 'disabled' : ''}>‹ 前のページ</button>
+      <span class="page-number">${state.pageIndex + 1} / ${Math.max(1, Math.ceil(monsters.length / 6))}</span>
+      <button class="btn" data-action="book-next" ${start + 6 >= monsters.length ? 'disabled' : ''}>次のページ ›</button></nav>`);
+  }
+  function detailView() {
+    if (!state.detail) return shell('<main class="empty-state">読み込み中…</main>');
+    const { monster, attempts } = state.detail;
+    const defeated = attempts.filter(item => item.status === 'defeated');
+    const last = defeated.length ? defeated[defeated.length - 1] : null;
+    const hp = Number(state.data.config['HP_' + state.difficulty]);
+    return shell(`<main class="detail"><div>${image(monster.monsterId, 'detail-image')}</div><section>
+      <div class="eyebrow">MONSTER FILE</div><h1>${safe(monster.name)}</h1>
+      <p>${safe(monster.description || '説明はMonstersシートで編集できます。')}</p>
+      <div class="stat-band"><div class="stat-label">これまでの討伐</div><div class="damage">${defeated.length} 回</div>
+      <div class="muted">前回討伐日: ${last ? safe(last.endDate) : '—'}</div></div>
+      <div class="stat-band"><div class="stat-label">今回の強さ</div><div class="difficulty">${[1,2,3].map(level =>
+        `<button class="btn ${state.difficulty === level ? 'selected' : ''}" data-action="difficulty" data-level="${level}" aria-pressed="${state.difficulty === level}">${'★'.repeat(level)}</button>`).join('')}</div>
+        <div class="hp-row"><span>初期HP</span><b>${hp.toLocaleString()}</b></div></div>
+      <button class="btn primary" data-action="start" data-mutate ${state.data.current ? 'disabled title="挑戦中のモンスターがあります"' : ''}>このモンスターに挑戦する</button>
+      <h2>挑戦履歴</h2><div class="history-list">${attempts.length ? attempts.map((item, index) =>
+        `<div class="history-item">${index + 1}回目 · ${'★'.repeat(item.difficulty)} · ${safe(item.startDate)} · ${safe(labels[item.status] || '終了')}
+        ${item.status === 'defeated' ? `<button class="btn ghost" data-action="result" data-id="${safe(item.challengeId)}">結果を見る</button>` : ''}</div>`).join('') : '<div class="muted">まだ挑戦記録はありません。</div>'}</div>
+      </section></main>`);
+  }
+  function settingsView() {
+    const config = state.data.config;
+    const fields = Object.entries(settingLabels).map(([key, label]) =>
+      `<label class="field">${safe(label)}<input name="${key}" value="${safe(config[key])}" ${typeof config[key] === 'number' ? 'type="number" min="0" step="any"' : 'type="text"'}></label>`).join('');
+    return shell(`<main class="settings"><h1>設定</h1><section class="settings-section"><h2>データと画像</h2>
+      <div class="settings-links"><a href="${safe(state.data.formUrl)}" target="_blank" rel="noopener">児童用フォーム</a>
+      <a href="${safe(state.data.spreadsheetUrl)}" target="_blank" rel="noopener">データシート</a></div></section>
+      <section class="settings-section"><div class="settings-grid">${fields}<label class="field">効果音
+      <select name="SOUND_ON"><option value="true" ${config.SOUND_ON === true || config.SOUND_ON === 'true' ? 'selected' : ''}>ON</option>
+      <option value="false" ${config.SOUND_ON === false || config.SOUND_ON === 'false' ? 'selected' : ''}>OFF</option></select></label></div>
+      <div class="settings-actions" style="margin-top:18px"><button class="btn primary" data-action="save-settings" data-mutate>設定を保存</button>
+      <button class="btn" data-action="sync" data-mutate>モンスター画像を再読込</button></div></section>
+      <section class="settings-section"><h2>現在の挑戦</h2><div class="settings-actions">
+      <label class="field">現在HP<input id="manual-hp" type="number" min="1" max="${state.data.current ? state.data.current.maxHp : 1}" value="${state.data.current ? state.data.current.currentHp : ''}"></label>
+      <button class="btn" data-action="adjust-hp" data-mutate ${state.data.current ? '' : 'disabled'}>HPを修正</button>
+      <button class="btn" data-action="undo" data-mutate>今日の攻撃を取り消す</button>
+      <button class="btn danger" data-action="cancel" data-mutate ${state.data.current ? '' : 'disabled'}>現在の挑戦を終了</button></div></section></main>`);
+  }
+  function resultView() {
+    const result = state.result;
+    if (!result) return shell('<main class="empty-state">読み込み中…</main>');
+    const stats = [
+      ['討伐期間', `${result.days}日`], ['初日の平均', `${Number(result.firstAverage.toFixed(1))}点`],
+      ['最終日の平均', `${Number(result.lastAverage.toFixed(1))}点`], ['最高平均', `${Number(result.highestAverage.toFixed(1))}点`],
+      ['最大コンボ', `${result.maxCombo} COMBO`], ['総ダメージ', result.totalDamage.toLocaleString()]
+    ];
+    return shell(`<main class="result"><div class="eyebrow">BATTLE RESULT</div><h1>撃破！！</h1>
+      <div class="result-main">${image(result.monsterId)}<section><h2>${safe(result.name)} ${'★'.repeat(result.difficulty)}</h2>
+      <p class="muted">${safe(result.startDate)} から ${safe(result.endDate)}</p>
+      <div class="result-grid">${stats.map(([label, value]) => `<div class="result-stat"><div class="stat-label">${label}</div><strong>${safe(value)}</strong></div>`).join('')}</div>
+      <h3>討伐期間の平均点推移</h3><div class="result-chart" aria-label="平均点の推移">${result.points.map(point =>
+        `<div style="height:${point.average}%" title="${safe(point.date)}: ${safe(point.average)}点"></div>`).join('')}</div></section></div>
+      <div class="settings-actions"><button class="btn primary" data-action="encyclopedia">討伐図鑑へ</button>
+      <button class="btn" data-action="main">メイン画面へ</button></div></main>`);
+  }
+  function setupView(message) {
+    root.innerHTML = `<div class="app-shell"><main class="empty-state"><h1>スクモン討伐アプリ</h1>
+      <p>${safe(message || '初期セットアップを始めます。')}</p>
+      <label class="field">Drive画像フォルダID<input id="setup-folder" value="" placeholder="フォルダID"></label>
+      <button class="btn primary" data-action="setup" data-mutate>セットアップ</button></main></div>`;
+  }
+  function render() {
+    if (!state.data) return;
+    root.innerHTML = state.page === 'encyclopedia' ? encyclopediaView() : state.page === 'detail' ? detailView()
+      : state.page === 'settings' ? settingsView() : state.page === 'result' ? resultView() : mainView();
+    loadImages();
+  }
+  function sound(kind) {
+    if (!state.data || !(state.data.config.SOUND_ON === true || state.data.config.SOUND_ON === 'true')) return;
+    try {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      state.audio = state.audio || new Context();
+      const now = state.audio.currentTime;
+      const notes = kind === 'victory' ? [392, 523, 659] : kind === 'combo' ? [660, 880] : [135];
+      notes.forEach((frequency, index) => {
+        const oscillator = state.audio.createOscillator();
+        const gain = state.audio.createGain();
+        oscillator.type = kind === 'attack' ? 'triangle' : 'sine';
+        oscillator.frequency.setValueAtTime(frequency, now + index * .12);
+        gain.gain.setValueAtTime(.0001, now + index * .12);
+        gain.gain.exponentialRampToValueAtTime(.07, now + index * .12 + .025);
+        gain.gain.exponentialRampToValueAtTime(.0001, now + index * .12 + .22);
+        oscillator.connect(gain).connect(state.audio.destination);
+        oscillator.start(now + index * .12);
+        oscillator.stop(now + index * .12 + .23);
+      });
+    } catch (error) { /* 音が使えない端末でも討伐を続ける。 */ }
+  }
+  async function openDetail(id) {
+    state.detail = await api('monsterDetail', id);
+    state.difficulty = 1;
+    state.page = 'detail';
+    render();
+  }
+  async function openResult(id) {
+    state.result = await api('battleResult', id);
+    state.page = 'result';
+    render();
+  }
+  root.addEventListener('click', async event => {
+    const button = event.target.closest('[data-action]');
+    if (!button || button.disabled) return;
+    const action = button.dataset.action;
+    if (action === 'main' || action === 'settings') { state.page = action; render(); return; }
+    if (action === 'encyclopedia') { state.page = 'encyclopedia'; state.pageIndex = -1; render(); return; }
+    if (action === 'book-open') { state.pageIndex = 0; render(); return; }
+    if (action === 'book-prev') { state.pageIndex--; render(); return; }
+    if (action === 'book-next') { state.pageIndex++; render(); return; }
+    if (action === 'difficulty') { state.difficulty = Number(button.dataset.level); render(); return; }
+    if (action === 'detail') { await run(() => openDetail(button.dataset.id)); return; }
+    if (action === 'result') { await run(() => openResult(button.dataset.id)); return; }
+    if (action === 'setup') {
+      const folder = document.getElementById('setup-folder').value.trim();
+      await run(async () => { await api('setupApp', folder); await refresh(); }); return;
+    }
+    if (action === 'start') {
+      if (!confirm(`${state.detail.monster.name}に強さ${'★'.repeat(state.difficulty)}で挑戦しますか？`)) return;
+      await run(async () => { await api('startChallenge', state.detail.monster.monsterId, state.difficulty); state.page = 'main'; await refresh(); }); return;
+    }
+    if (action === 'attack') {
+      await run(async () => {
+        const result = await api('attackToday');
+        sound(result.defeated ? 'victory' : result.combo ? 'combo' : 'attack');
+        const float = document.createElement('div');
+        float.className = 'damage-float'; float.textContent = `-${result.damage.total}`;
+        document.body.appendChild(float); setTimeout(() => float.remove(), 1200);
+        if (result.defeated) {
+          document.body.insertAdjacentHTML('beforeend', '<div class="victory-overlay">撃破！！</div>');
+          await new Promise(resolve => setTimeout(resolve, 1600));
+          document.querySelector('.victory-overlay')?.remove();
+          await openResult(result.challengeId);
+        } else { await refresh(); }
+      }); return;
+    }
+    if (action === 'save-settings') {
+      const inputs = root.querySelectorAll('[name]');
+      const values = Object.fromEntries([...inputs].map(input => [input.name, input.value]));
+      await run(async () => { await api('saveSettings', values); await refresh(); toast('設定を保存しました。'); }); return;
+    }
+    if (action === 'sync') {
+      await run(async () => { const result = await api('syncMonsters'); await refresh(); toast(`${result.total}体の画像を確認しました。`); }); return;
+    }
+    if (action === 'adjust-hp') {
+      const hp = document.getElementById('manual-hp').value;
+      if (!confirm(`現在HPを${hp}に変更しますか？`)) return;
+      await run(async () => { await api('adjustHp', hp); await refresh(); toast('HPを修正しました。'); }); return;
+    }
+    if (action === 'undo') {
+      if (!confirm('今日の攻撃を取り消しますか？')) return;
+      await run(async () => { await api('undoToday'); await refresh(); toast('今日の攻撃を取り消しました。'); }); return;
+    }
+    if (action === 'cancel') {
+      if (!confirm('現在の挑戦を終了しますか？ 履歴は残ります。')) return;
+      await run(async () => { await api('cancelChallenge'); state.page = 'main'; await refresh(); });
+    }
+  });
+  refresh().catch(error => setupView(error && error.message));
+})();
+</script>
